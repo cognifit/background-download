@@ -27,15 +27,17 @@ var exec = require('cordova/exec'),
  *
  * @param {string} uri The location of the resource.
  * @param {File} resultFile The file that the response will be written to.
+ * @param {string} notificationTitle The title for the download notification.
  */
 var DownloadOperation = function (uri, resultFile) {
 
-    if (uri == null || resultFile == null) {
+    if (uri == null || resultFile == null || notificationTitle == null) {
         throw new Error("missing or invalid argument");
     }
     
     this.uri = uri;
     this.resultFile = resultFile;
+    this.notificationTitle = notificationTitle;
 };
 
 /**
@@ -60,7 +62,7 @@ DownloadOperation.prototype.startAsync = function() {
             deferral.reject(err);
         };
 
-    exec(successCallback, errorCallback, "BackgroundDownload", "startAsync", [this.uri, this.resultFile.toURL()]);
+    exec(successCallback, errorCallback, "BackgroundDownload", "startAsync", [this.uri, this.resultFile.toURL(), this.notificationTitle]);
 
     // custom mechanism to trigger stop when user cancels pending operation
     deferral.promise.onCancelled = function () {
