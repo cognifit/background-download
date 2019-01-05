@@ -34,9 +34,10 @@ var BackgroundDownloader = function() {
  *
  * @param {string} uri The location of the resource.
  * @param {File} resultFile The file that the response will be written to.
+ * @param {string} notificationTitle The title for the notification.
  */
-BackgroundDownloader.prototype.createDownload = function(uri, resultFile) {
-    return new DownloadOperation(uri, resultFile);
+BackgroundDownloader.prototype.createDownload = function(uri, resultFile, notificationTitle) {
+    return new DownloadOperation(uri, resultFile, notificationTitle);
 };
 
 module.exports = BackgroundDownloader;
