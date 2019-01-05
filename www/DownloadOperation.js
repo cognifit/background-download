@@ -29,7 +29,7 @@ var exec = require('cordova/exec'),
  * @param {File} resultFile The file that the response will be written to.
  * @param {string} notificationTitle The title for the download notification.
  */
-var DownloadOperation = function (uri, resultFile) {
+var DownloadOperation = function (uri, resultFile, notificationTitle) {
 
     if (uri == null || resultFile == null || notificationTitle == null) {
         throw new Error("missing or invalid argument");
