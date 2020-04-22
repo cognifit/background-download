@@ -358,11 +358,13 @@ public class BackgroundDownload extends CordovaPlugin {
             Cursor cursor = mgr.query(query);
             int idxURI = cursor.getColumnIndex(DownloadManager.COLUMN_URI);
             cursor.moveToFirst();
-            String uri = cursor.getString(idxURI);
-
-            Download curDownload = activDownloads.get(uri);
+            Download curDownload = null;
 
             try {
+                // on failure stupidCount is 16, but next call will throw
+                String uri = cursor.getString(idxURI);
+                curDownload = activDownloads.get(uri);
+
                 long receivedID = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L);
                 query.setFilterById(receivedID);
                 int idxStatus = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
@@ -381,9 +383,29 @@ public class BackgroundDownload extends CordovaPlugin {
                 }
                 cursor.close();
             } catch (Exception ex) {
-                curDownload.getCallbackContextDownloadStart().error(ex.getMessage());
+                if (curDownload != null) {
+                    curDownload.getCallbackContextDownloadStart().error(ex.getMessage());
+                } else {
+                    // try to find the download using the downloadId. If we are here it means the download failed
+                    // if we can't find any the Javascript callbacks will never be invoked
+                    for (Download download : activDownloads.values()) {
+                        if (download.getDownloadId() == downloadId) {
+                            download.getCallbackContextDownloadStart().error("_DOWNLOAD_FAIL_");
+                        }
+                    }
+                }
             } finally {
-                CleanUp(curDownload);
+                if (curDownload != null) {
+                    CleanUp(curDownload);
+                } else {
+                    // try to find the download using the downloadId
+                    // if we can't find any the Javascript callbacks will never be invoked
+                    for (Download download : activDownloads.values()) {
+                        if (download.getDownloadId() == downloadId) {
+                            CleanUp(download);
+                        }
+                    }
+                }
             }
         }
     };
