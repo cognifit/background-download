@@ -37,25 +37,29 @@
     
     ignoreNextError = NO;
     
-    session = [self backgroundSession];
-    
+    session = [self backgroundSession: session.delegate != self];
     [session getTasksWithCompletionHandler:^(NSArray *dataTasks, NSArray *uploadTasks, NSArray *downloadTasks) {
         if (downloadTasks.count > 0) {
-            downloadTask = downloadTasks[0];
+            self.downloadTask = downloadTasks[0];
         } else {
-            downloadTask = [session downloadTaskWithRequest:request];
+            self.downloadTask = [session downloadTaskWithRequest:request];
         }
-        [downloadTask resume];
+        [self.downloadTask resume];
     }];
     
 }
 
-- (NSURLSession *)backgroundSession
+- (NSURLSession *)backgroundSession:(BOOL)forceCreation
 {
     static NSURLSession *backgroundSession = nil;
     static dispatch_once_t onceToken;
+    if (forceCreation) {
+        onceToken = 0;
+        [backgroundSession finishTasksAndInvalidate];
+    }
     dispatch_once(&onceToken, ^{
-        NSURLSessionConfiguration *config = [NSURLSessionConfiguration backgroundSessionConfigurationWithIdentifier:@"com.cordova.plugin.BackgroundDownload.BackgroundSession"];
+        NSString* sessionId = [NSString stringWithFormat:@"com.cordova.plugin.BackgroundDownload.BackgroundSession.%i", rand()];
+        NSURLSessionConfiguration *config = [NSURLSessionConfiguration backgroundSessionConfigurationWithIdentifier:sessionId];
         backgroundSession = [NSURLSession sessionWithConfiguration:config delegate:self delegateQueue:nil];
     });
     return backgroundSession;
@@ -78,6 +82,7 @@
 }
 
 - (void)URLSession:(NSURLSession *)session downloadTask:(NSURLSessionDownloadTask *)downloadTask didWriteData:(int64_t)bytesWritten totalBytesWritten:(int64_t)totalBytesWritten totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
+    
     NSMutableDictionary* progressObj = [NSMutableDictionary dictionaryWithCapacity:1];
     [progressObj setObject:[NSNumber numberWithInteger:totalBytesWritten] forKey:@"bytesReceived"];
     [progressObj setObject:[NSNumber numberWithInteger:totalBytesExpectedToWrite] forKey:@"totalBytesToReceive"];
@@ -118,7 +123,7 @@
 - (void)URLSession:(NSURLSession *)session downloadTask:(NSURLSessionDownloadTask *)downloadTask didFinishDownloadingToURL:(NSURL *)location {
     NSFileManager *fileManager = [NSFileManager defaultManager];
     
-    NSURL *targetURL = [NSURL URLWithString:_targetFile];
+    NSURL *targetURL = [NSURL URLWithString:self.targetFile];
     
     [fileManager removeItemAtPath:targetURL.path error: nil];
     [fileManager createFileAtPath:targetURL.path contents:[fileManager contentsAtPath:[location path]] attributes:nil];
