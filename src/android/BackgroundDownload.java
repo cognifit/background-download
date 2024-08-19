@@ -18,8 +18,6 @@
  */
 package org.apache.cordova.backgroundDownload;
 
-import static android.content.Context.RECEIVER_EXPORTED;
-
 import java.io.File;
 import java.util.HashMap;
 import java.util.Timer;
@@ -153,7 +151,7 @@ public class BackgroundDownload extends CordovaPlugin {
             // required to receive notification when download is completed
             final IntentFilter intentFilter = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-              cordova.getActivity().registerReceiver(receiver, intentFilter, RECEIVER_EXPORTED);
+              cordova.getActivity().registerReceiver(receiver, intentFilter, Context.RECEIVER_EXPORTED);
             } else {
               cordova.getActivity().registerReceiver(receiver, intentFilter);
             }
