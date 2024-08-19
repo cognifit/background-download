@@ -18,6 +18,8 @@
  */
 package org.apache.cordova.backgroundDownload;
 
+import static android.content.Context.RECEIVER_EXPORTED;
+
 import java.io.File;
 import java.util.HashMap;
 import java.util.Timer;
@@ -37,6 +39,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Build;
 
 /**
  * Based on DownloadManager which is intended to be used for long-running HTTP downloads. Support of Android 2.3. (API 9) and later
@@ -124,7 +127,7 @@ public class BackgroundDownload extends CordovaPlugin {
             this.timerProgressUpdate = TimerProgressUpdate;
         };
     }
-    
+
     HashMap<String, Download> activDownloads = new HashMap<String, Download>();
 
     @Override
@@ -148,7 +151,12 @@ public class BackgroundDownload extends CordovaPlugin {
     private void startAsync(JSONArray args, CallbackContext callbackContext) throws JSONException {
         if (activDownloads.size() == 0) {
             // required to receive notification when download is completed
-            cordova.getActivity().registerReceiver(receiver, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
+            final IntentFilter intentFilter = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+              cordova.getActivity().registerReceiver(receiver, intentFilter, RECEIVER_EXPORTED);
+            } else {
+              cordova.getActivity().registerReceiver(receiver, intentFilter);
+            }
         }
 
         Download curDownload = new Download(args.get(0).toString(), args.get(1).toString(), callbackContext);
