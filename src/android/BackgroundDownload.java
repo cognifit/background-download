@@ -18,6 +18,8 @@
  */
 package org.apache.cordova.backgroundDownload;
 
+import static android.content.Context.RECEIVER_EXPORTED;
+
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -40,9 +42,6 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import android.app.DownloadManager;
-import android.app.Notification;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -56,12 +55,9 @@ import android.text.TextUtils;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
-import androidx.core.app.NotificationCompat;
-import androidx.core.content.ContextCompat;
 import androidx.work.Constraints;
 import androidx.work.Data;
 import androidx.work.ExistingWorkPolicy;
-import androidx.work.ForegroundInfo;
 import androidx.work.NetworkType;
 import androidx.work.OneTimeWorkRequest;
 import androidx.work.WorkInfo;
@@ -82,9 +78,6 @@ public class BackgroundDownload extends CordovaPlugin {
     private static final long DOWNLOAD_PROGRESS_UPDATE_TIMEOUT = 1000;
     private static final String TRANSPORT_DOWNLOAD_MANAGER = "download_manager";
     private static final String TRANSPORT_WORKMANAGER_HTTP = "workmanager_http";
-    private static final String WORK_NOTIFICATION_CHANNEL_ID = "background_download_fallback";
-    private static final String WORK_NOTIFICATION_CHANNEL_NAME = "Background downloads";
-    private static final int WORK_NOTIFICATION_BASE_ID = 41000;
     private static final int HTTP_CONNECT_TIMEOUT_MS = 15000;
     private static final int HTTP_READ_TIMEOUT_MS = 30000;
     private static final int HTTP_PROGRESS_MIN_BYTES = 64 * 1024;
@@ -92,7 +85,6 @@ public class BackgroundDownload extends CordovaPlugin {
     private static final int HTTP_MAX_REDIRECTS = 5;
     private static final String WORK_INPUT_URI = "uri";
     private static final String WORK_INPUT_TEMP_PATH = "tempFilePath";
-    private static final String WORK_INPUT_TITLE = "notificationTitle";
     private static final String WORK_PROGRESS_BYTES_RECEIVED = "bytesReceived";
     private static final String WORK_PROGRESS_TOTAL_BYTES = "totalBytes";
     private static final String WORK_OUTPUT_MESSAGE = "message";
@@ -284,12 +276,11 @@ public class BackgroundDownload extends CordovaPlugin {
         if (activDownloads.size() == 0) {
             // required to receive notification when download is completed
             final IntentFilter intentFilter = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
-            ContextCompat.registerReceiver(
-                    cordova.getActivity(),
-                    receiver,
-                    intentFilter,
-                    ContextCompat.RECEIVER_NOT_EXPORTED
-            );
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                cordova.getActivity().registerReceiver(receiver, intentFilter, RECEIVER_EXPORTED);
+            } else {
+                cordova.getActivity().registerReceiver(receiver, intentFilter);
+            }
         }
 
         Download curDownload = new Download(args.get(0).toString(), args.get(1).toString(), callbackContext);
@@ -328,31 +319,16 @@ public class BackgroundDownload extends CordovaPlugin {
         curDownload.setDownloadId(findActiveDownload(curDownload.getUriString()));
 
         if (curDownload.getDownloadId() == DOWNLOAD_ID_UNDEFINED) {
-            File downloadManagerTempFile = getDownloadManagerDestinationFile(curDownload);
-            curDownload.setTempFilePath(Uri.fromFile(downloadManagerTempFile).toString());
-
             // make sure file does not exist, in other case DownloadManager will fail
-            deleteFileIfExists(downloadManagerTempFile);
+            deleteFileIfExists(new File(Uri.parse(curDownload.getTempFilePath()).getPath()));
 
             DownloadManager mgr = (DownloadManager) this.cordova.getActivity().getSystemService(Context.DOWNLOAD_SERVICE);
             DownloadManager.Request request = new DownloadManager.Request(source);
             request.setTitle(notificationTitle);
             request.setVisibleInDownloadsUi(false);
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                curDownload.setDestinationMode("external_public_downloads");
-                request.setDestinationInExternalPublicDir(
-                        Environment.DIRECTORY_DOWNLOADS,
-                        downloadManagerTempFile.getName()
-                );
-            } else {
-                curDownload.setDestinationMode("external_app_files_downloads");
-                request.setDestinationInExternalFilesDir(
-                        this.cordova.getActivity(),
-                        Environment.DIRECTORY_DOWNLOADS,
-                        downloadManagerTempFile.getName()
-                );
-            }
+            curDownload.setDestinationMode("requested_temp_uri");
+            request.setDestinationUri(Uri.parse(curDownload.getTempFilePath()));
             Log.i(TAG, "Enqueueing download uri=" + curDownload.getUriString() + " tempPath=" + curDownload.getTempFilePath() + " finalPath=" + curDownload.getFilePath());
             curDownload.setDownloadId(mgr.enqueue(request));
 
@@ -676,24 +652,6 @@ public class BackgroundDownload extends CordovaPlugin {
         callbackContext.success();
     }
 
-    private File getDownloadManagerDestinationFile(Download curDownload) {
-        File requestedTempFile = new File(Uri.parse(curDownload.getTempFilePath()).getPath());
-        String tempFileName = requestedTempFile.getName();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            File publicDownloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            if (publicDownloadsDir == null) {
-                throw new IllegalStateException("Public downloads directory is unavailable");
-            }
-            return new File(publicDownloadsDir, tempFileName);
-        } else {
-            File externalFilesDir = this.cordova.getActivity().getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
-            if (externalFilesDir == null) {
-                throw new IllegalStateException("External files downloads directory is unavailable");
-            }
-            return new File(externalFilesDir, tempFileName);
-        }
-    }
-
     private long findActiveDownload(String uri) {
 
         DownloadManager mgr = (DownloadManager) cordova.getActivity().getSystemService(Context.DOWNLOAD_SERVICE);
@@ -804,7 +762,6 @@ public class BackgroundDownload extends CordovaPlugin {
         Data inputData = new Data.Builder()
                 .putString(WORK_INPUT_URI, curDownload.getUriString())
                 .putString(WORK_INPUT_TEMP_PATH, Uri.parse(curDownload.getTempFilePath()).getPath())
-                .putString(WORK_INPUT_TITLE, curDownload.getNotificationTitle())
                 .build();
 
         OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(HttpDownloadWorker.class)
@@ -1051,7 +1008,6 @@ public class BackgroundDownload extends CordovaPlugin {
         public Result doWork() {
             String uriString = getInputData().getString(WORK_INPUT_URI);
             String tempFilePath = getInputData().getString(WORK_INPUT_TEMP_PATH);
-            String notificationTitle = getInputData().getString(WORK_INPUT_TITLE);
 
             if (TextUtils.isEmpty(uriString) || TextUtils.isEmpty(tempFilePath)) {
                 return Result.failure(new Data.Builder()
@@ -1067,8 +1023,7 @@ public class BackgroundDownload extends CordovaPlugin {
             deleteFileIfExists(tempFile);
 
             try {
-                setForegroundAsync(createForegroundInfo(notificationTitle, 0L, -1L));
-                return downloadToFile(uriString, tempFile, notificationTitle);
+                return downloadToFile(uriString, tempFile);
             } catch (Exception ex) {
                 deleteFileIfExists(tempFile);
                 return Result.failure(new Data.Builder()
@@ -1078,7 +1033,7 @@ public class BackgroundDownload extends CordovaPlugin {
             }
         }
 
-        private Result downloadToFile(String uriString, File tempFile, String notificationTitle) {
+        private Result downloadToFile(String uriString, File tempFile) {
             String currentUri = uriString;
             HttpURLConnection connection = null;
             InputStream inputStream = null;
@@ -1132,7 +1087,6 @@ public class BackgroundDownload extends CordovaPlugin {
                             .putLong(WORK_PROGRESS_BYTES_RECEIVED, 0L)
                             .putLong(WORK_PROGRESS_TOTAL_BYTES, totalBytes)
                             .build());
-                    setForegroundAsync(createForegroundInfo(notificationTitle, 0L, totalBytes));
 
                     inputStream = connection.getInputStream();
                     outputStream = new FileOutputStream(tempFile, false);
@@ -1157,13 +1111,13 @@ public class BackgroundDownload extends CordovaPlugin {
                         long now = System.currentTimeMillis();
                         if (bytesReceived - lastReportedBytes >= HTTP_PROGRESS_MIN_BYTES
                                 || now - lastReportedAt >= HTTP_PROGRESS_MIN_INTERVAL_MS) {
-                            reportProgress(notificationTitle, bytesReceived, totalBytes);
+                            reportProgress(bytesReceived, totalBytes);
                             lastReportedBytes = bytesReceived;
                             lastReportedAt = now;
                         }
                     }
                     outputStream.flush();
-                    reportProgress(notificationTitle, bytesReceived, totalBytes);
+                    reportProgress(bytesReceived, totalBytes);
 
                     closeQuietly(inputStream);
                     closeQuietly(outputStream);
@@ -1196,53 +1150,11 @@ public class BackgroundDownload extends CordovaPlugin {
             }
         }
 
-        private void reportProgress(String notificationTitle, long bytesReceived, long totalBytes) {
+        private void reportProgress(long bytesReceived, long totalBytes) {
             setProgressAsync(new Data.Builder()
                     .putLong(WORK_PROGRESS_BYTES_RECEIVED, bytesReceived)
                     .putLong(WORK_PROGRESS_TOTAL_BYTES, totalBytes)
                     .build());
-            setForegroundAsync(createForegroundInfo(notificationTitle, bytesReceived, totalBytes));
-        }
-
-        private ForegroundInfo createForegroundInfo(String notificationTitle, long bytesReceived, long totalBytes) {
-            ensureNotificationChannel();
-
-            Context context = getApplicationContext();
-            String title = TextUtils.isEmpty(notificationTitle) ? "Downloading file" : notificationTitle;
-            NotificationCompat.Builder builder = new NotificationCompat.Builder(context, WORK_NOTIFICATION_CHANNEL_ID)
-                    .setSmallIcon(context.getApplicationInfo().icon)
-                    .setContentTitle(title)
-                    .setContentText(totalBytes > 0 ? bytesReceived + " / " + totalBytes + " bytes" : bytesReceived + " bytes")
-                    .setOngoing(true)
-                    .setOnlyAlertOnce(true)
-                    .setPriority(NotificationCompat.PRIORITY_LOW);
-
-            if (totalBytes > 0) {
-                builder.setProgress((int) Math.min(Integer.MAX_VALUE, totalBytes), (int) Math.min(Integer.MAX_VALUE, bytesReceived), false);
-            } else {
-                builder.setProgress(0, 0, true);
-            }
-
-            Notification notification = builder.build();
-            return new ForegroundInfo(WORK_NOTIFICATION_BASE_ID + Math.abs(getId().hashCode() % 1000), notification);
-        }
-
-        private void ensureNotificationChannel() {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-                return;
-            }
-            NotificationManager notificationManager = (NotificationManager) getApplicationContext().getSystemService(Context.NOTIFICATION_SERVICE);
-            if (notificationManager == null || notificationManager.getNotificationChannel(WORK_NOTIFICATION_CHANNEL_ID) != null) {
-                return;
-            }
-
-            NotificationChannel channel = new NotificationChannel(
-                    WORK_NOTIFICATION_CHANNEL_ID,
-                    WORK_NOTIFICATION_CHANNEL_NAME,
-                    NotificationManager.IMPORTANCE_LOW
-            );
-            channel.setDescription("Fallback background file downloads");
-            notificationManager.createNotificationChannel(channel);
         }
 
         private static boolean isRedirect(int responseCode) {
