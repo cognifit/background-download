@@ -452,8 +452,7 @@ public class BackgroundDownload extends CordovaPlugin {
         }
 
         if (!curDownload.isUsingWorkManagerFallback() && curDownload.getDownloadId() != DOWNLOAD_ID_UNDEFINED) {
-            DownloadManager mgr = (DownloadManager) cordova.getActivity().getSystemService(Context.DOWNLOAD_SERVICE);
-            mgr.remove(curDownload.getDownloadId());
+            removeDownloadManagerEntryAsync(curDownload.getDownloadId());
         }
         activDownloads.remove(curDownload.getUriString());
 
@@ -465,6 +464,26 @@ public class BackgroundDownload extends CordovaPlugin {
             }
         }
 
+    }
+
+    private void removeDownloadManagerEntryAsync(final long downloadId) {
+        if (downloadId == DOWNLOAD_ID_UNDEFINED) {
+            return;
+        }
+
+        cordova.getThreadPool().execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    DownloadManager mgr = (DownloadManager) cordova.getActivity().getSystemService(Context.DOWNLOAD_SERVICE);
+                    if (mgr != null) {
+                        mgr.remove(downloadId);
+                    }
+                } catch (Exception ex) {
+                    Log.w(TAG, "Unable to remove downloadId=" + downloadId + " from DownloadManager", ex);
+                }
+            }
+        });
     }
 
     private String getUserFriendlyReason(int reason) {
@@ -644,8 +663,7 @@ public class BackgroundDownload extends CordovaPlugin {
             }
             cleanFallbackTempFile(curDownload);
         } else {
-            DownloadManager mgr = (DownloadManager) cordova.getActivity().getSystemService(Context.DOWNLOAD_SERVICE);
-            mgr.remove(curDownload.getDownloadId());
+            removeDownloadManagerEntryAsync(curDownload.getDownloadId());
             deleteFileIfExists(new File(Uri.parse(curDownload.getTempFilePath()).getPath()));
         }
         CleanUp(curDownload);
@@ -873,7 +891,7 @@ public class BackgroundDownload extends CordovaPlugin {
                         final JSONObject payload = createFailurePayload(context, cursor, curDownload, status, reason);
                         cleanupHandledAsync = true;
                         cursor.close();
-                        mgr.remove(downloadId);
+                        removeDownloadManagerEntryAsync(downloadId);
                         cordova.getThreadPool().execute(new Runnable() {
                             @Override
                             public void run() {
