@@ -19,12 +19,30 @@
 
 #import "BackgroundDownload.h"
 
+static NSString *const kBackgroundDownloadSessionIdentifierSuffix = @"cordova.plugin.BackgroundDownload.BackgroundSession";
+
 @implementation BackgroundDownload {
     bool ignoreNextError;
 }
 
 @synthesize session;
 @synthesize downloadTask;
+
+- (NSString *)backgroundSessionIdentifier
+{
+    NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
+    if (bundleIdentifier.length == 0) {
+        bundleIdentifier = @"com.cordova.plugin.BackgroundDownload";
+    }
+
+    return [NSString stringWithFormat:@"%@.%@", bundleIdentifier, kBackgroundDownloadSessionIdentifierSuffix];
+}
+
+- (void)pluginInitialize
+{
+    [super pluginInitialize];
+    self.session = [self backgroundSession];
+}
 
 - (void)startAsync:(CDVInvokedUrlCommand*)command
 {
@@ -37,32 +55,68 @@
     
     ignoreNextError = NO;
     
-    session = [self backgroundSession: session.delegate != self];
-    [session getTasksWithCompletionHandler:^(NSArray *dataTasks, NSArray *uploadTasks, NSArray *downloadTasks) {
-        if (downloadTasks.count > 0) {
-            self.downloadTask = downloadTasks[0];
+    self.session = [self backgroundSession];
+    [self.session getTasksWithCompletionHandler:^(NSArray *dataTasks, NSArray *uploadTasks, NSArray *downloadTasks) {
+        NSURLSessionDownloadTask *matchingTask = nil;
+        for (NSURLSessionDownloadTask *existingTask in downloadTasks) {
+            NSString *taskDescription = existingTask.taskDescription;
+            NSString *taskURL = existingTask.originalRequest.URL.absoluteString;
+            if ((taskDescription != nil && [taskDescription isEqualToString:self.downloadUri]) ||
+                (taskURL != nil && [taskURL isEqualToString:self.downloadUri])) {
+                matchingTask = existingTask;
+                break;
+            }
+        }
+
+        if (matchingTask != nil) {
+            self.downloadTask = matchingTask;
         } else {
-            self.downloadTask = [session downloadTaskWithRequest:request];
+            self.downloadTask = [self.session downloadTaskWithRequest:request];
+            self.downloadTask.taskDescription = self.downloadUri;
         }
         [self.downloadTask resume];
     }];
     
 }
 
-- (NSURLSession *)backgroundSession:(BOOL)forceCreation
+- (NSURLSession *)backgroundSession
 {
     static NSURLSession *backgroundSession = nil;
-    static dispatch_once_t onceToken;
-    if (forceCreation) {
-        onceToken = 0;
-        [backgroundSession finishTasksAndInvalidate];
+    @synchronized([BackgroundDownload class]) {
+        if (backgroundSession == nil || backgroundSession.delegate != self) {
+            NSURLSessionConfiguration *config = [NSURLSessionConfiguration backgroundSessionConfigurationWithIdentifier:[self backgroundSessionIdentifier]];
+            if ([config respondsToSelector:@selector(setSessionSendsLaunchEvents:)]) {
+                config.sessionSendsLaunchEvents = YES;
+            }
+            config.HTTPMaximumConnectionsPerHost = 1;
+            backgroundSession = [NSURLSession sessionWithConfiguration:config delegate:self delegateQueue:nil];
+        }
     }
-    dispatch_once(&onceToken, ^{
-        NSString* sessionId = [NSString stringWithFormat:@"com.cordova.plugin.BackgroundDownload.BackgroundSession.%i", rand()];
-        NSURLSessionConfiguration *config = [NSURLSessionConfiguration backgroundSessionConfigurationWithIdentifier:sessionId];
-        backgroundSession = [NSURLSession sessionWithConfiguration:config delegate:self delegateQueue:nil];
-    });
+
     return backgroundSession;
+}
+
+- (void)handleEventsForBackgroundURLSession:(NSString *)identifier completionHandler:(void (^)(void))completionHandler
+{
+    if ([[self backgroundSessionIdentifier] isEqualToString:identifier]) {
+        self.backgroundCompletionHandler = completionHandler;
+        self.session = [self backgroundSession];
+    } else if (completionHandler != nil) {
+        completionHandler();
+    }
+}
+
+- (void)URLSessionDidFinishEventsForBackgroundURLSession:(NSURLSession *)session
+{
+    void (^completionHandler)(void) = self.backgroundCompletionHandler;
+    if (completionHandler == nil) {
+        return;
+    }
+
+    self.backgroundCompletionHandler = nil;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        completionHandler();
+    });
 }
 
 - (void)stop:(CDVInvokedUrlCommand*)command
@@ -107,8 +161,9 @@
             if (resumeData != nil) {
                 ignoreNextError = YES;
                 [downloadTask cancel];
-                downloadTask = [self.session downloadTaskWithResumeData:resumeData];
-                [downloadTask resume];
+                self.downloadTask = [self.session downloadTaskWithResumeData:resumeData];
+                self.downloadTask.taskDescription = self.downloadUri;
+                [self.downloadTask resume];
                 return;
             }
         }
