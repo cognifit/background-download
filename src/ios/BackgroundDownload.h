@@ -27,6 +27,7 @@
 @property NSString *targetFile;
 @property NSString *downloadUri;
 @property NSString *callbackId;
+@property (copy) void (^backgroundCompletionHandler)(void);
 
 @property (nonatomic) NSURLSession *session;
 @property (nonatomic) NSURLSessionDownloadTask *downloadTask;
