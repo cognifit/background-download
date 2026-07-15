@@ -22,7 +22,10 @@
 static NSString *const kBackgroundDownloadSessionIdentifierSuffix = @"cordova.plugin.BackgroundDownload.BackgroundSession";
 
 @implementation BackgroundDownload {
-    bool ignoreNextError;
+    NSMutableDictionary<NSNumber *, NSString *> *_callbackIdsByTaskId;
+    NSMutableDictionary<NSNumber *, NSString *> *_downloadUrisByTaskId;
+    NSMutableDictionary<NSNumber *, NSString *> *_targetFilesByTaskId;
+    NSMutableSet<NSNumber *> *_ignoreCompletionForTaskIds;
 }
 
 @synthesize session;
@@ -41,28 +44,33 @@ static NSString *const kBackgroundDownloadSessionIdentifierSuffix = @"cordova.pl
 - (void)pluginInitialize
 {
     [super pluginInitialize];
+    _callbackIdsByTaskId = [NSMutableDictionary dictionary];
+    _downloadUrisByTaskId = [NSMutableDictionary dictionary];
+    _targetFilesByTaskId = [NSMutableDictionary dictionary];
+    _ignoreCompletionForTaskIds = [NSMutableSet set];
     self.session = [self backgroundSession];
 }
 
 - (void)startAsync:(CDVInvokedUrlCommand*)command
 {
-    self.downloadUri = [command.arguments objectAtIndex:0];
-    self.targetFile = [command.arguments objectAtIndex:1];
+    NSString *downloadUri = [command.arguments objectAtIndex:0];
+    NSString *targetFile = [command.arguments objectAtIndex:1];
     
-    self.callbackId = command.callbackId;
-    
-    NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:self.downloadUri]];
-    
-    ignoreNextError = NO;
+    NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:downloadUri]];
     
     self.session = [self backgroundSession];
     [self.session getTasksWithCompletionHandler:^(NSArray *dataTasks, NSArray *uploadTasks, NSArray *downloadTasks) {
         NSURLSessionDownloadTask *matchingTask = nil;
         for (NSURLSessionDownloadTask *existingTask in downloadTasks) {
+            NSNumber *taskId = @(existingTask.taskIdentifier);
+            if (_callbackIdsByTaskId[taskId] != nil) {
+                continue;
+            }
+
             NSString *taskDescription = existingTask.taskDescription;
             NSString *taskURL = existingTask.originalRequest.URL.absoluteString;
-            if ((taskDescription != nil && [taskDescription isEqualToString:self.downloadUri]) ||
-                (taskURL != nil && [taskURL isEqualToString:self.downloadUri])) {
+            if ((taskDescription != nil && [taskDescription isEqualToString:downloadUri]) ||
+                (taskURL != nil && [taskURL isEqualToString:downloadUri])) {
                 matchingTask = existingTask;
                 break;
             }
@@ -72,8 +80,15 @@ static NSString *const kBackgroundDownloadSessionIdentifierSuffix = @"cordova.pl
             self.downloadTask = matchingTask;
         } else {
             self.downloadTask = [self.session downloadTaskWithRequest:request];
-            self.downloadTask.taskDescription = self.downloadUri;
+            self.downloadTask.taskDescription = downloadUri;
         }
+
+        NSNumber *taskId = @(self.downloadTask.taskIdentifier);
+        _callbackIdsByTaskId[taskId] = command.callbackId;
+        _downloadUrisByTaskId[taskId] = downloadUri;
+        _targetFilesByTaskId[taskId] = targetFile;
+        [_ignoreCompletionForTaskIds removeObject:taskId];
+
         [self.downloadTask resume];
     }];
     
@@ -122,20 +137,35 @@ static NSString *const kBackgroundDownloadSessionIdentifierSuffix = @"cordova.pl
 - (void)stop:(CDVInvokedUrlCommand*)command
 {
     CDVPluginResult* pluginResult = nil;
-    NSString* myarg = [command.arguments objectAtIndex:0];
+    NSString* downloadUri = [command.arguments objectAtIndex:0];
     
-    if (myarg != nil) {
+    if (downloadUri != nil) {
         pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
     } else {
         pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Arg was null"];
     }
-    
-    [downloadTask cancel];
+
+    if (downloadUri != nil) {
+        [self.session getTasksWithCompletionHandler:^(NSArray *dataTasks, NSArray *uploadTasks, NSArray *downloadTasks) {
+            for (NSURLSessionDownloadTask *existingTask in downloadTasks) {
+                NSString *taskDescription = existingTask.taskDescription;
+                NSString *taskURL = existingTask.originalRequest.URL.absoluteString;
+                if ((taskDescription != nil && [taskDescription isEqualToString:downloadUri]) ||
+                    (taskURL != nil && [taskURL isEqualToString:downloadUri])) {
+                    [existingTask cancel];
+                }
+            }
+        }];
+    }
     
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
 }
 
 - (void)URLSession:(NSURLSession *)session downloadTask:(NSURLSessionDownloadTask *)downloadTask didWriteData:(int64_t)bytesWritten totalBytesWritten:(int64_t)totalBytesWritten totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
+    NSString *callbackId = _callbackIdsByTaskId[@(downloadTask.taskIdentifier)];
+    if (callbackId == nil) {
+        return;
+    }
     
     NSMutableDictionary* progressObj = [NSMutableDictionary dictionaryWithCapacity:1];
     [progressObj setObject:[NSNumber numberWithInteger:totalBytesWritten] forKey:@"bytesReceived"];
@@ -144,12 +174,16 @@ static NSString *const kBackgroundDownloadSessionIdentifierSuffix = @"cordova.pl
     [resObj setObject:progressObj forKey:@"progress"];
     CDVPluginResult* result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:resObj];
     result.keepCallback = [NSNumber numberWithInteger: TRUE];
-    [self.commandDelegate sendPluginResult:result callbackId:self.callbackId];
+    [self.commandDelegate sendPluginResult:result callbackId:callbackId];
 }
 
 -(void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
-    if (ignoreNextError) {
-        ignoreNextError = NO;
+    NSNumber *taskId = @(task.taskIdentifier);
+    NSString *callbackId = _callbackIdsByTaskId[taskId];
+    NSString *downloadUri = _downloadUrisByTaskId[taskId];
+
+    if ([_ignoreCompletionForTaskIds containsObject:taskId]) {
+        [_ignoreCompletionForTaskIds removeObject:taskId];
         return;
     }
     
@@ -158,27 +192,50 @@ static NSString *const kBackgroundDownloadSessionIdentifierSuffix = @"cordova.pl
             NSData* resumeData = [[error userInfo] objectForKey:NSURLSessionDownloadTaskResumeData];
             // resumeData is available only if operation was terminated by the system (no connection or other reason)
             // this happens when application is closed when there is pending download, so we try to resume it
-            if (resumeData != nil) {
-                ignoreNextError = YES;
-                [downloadTask cancel];
+            if (resumeData != nil && callbackId != nil && downloadUri != nil) {
+                [_ignoreCompletionForTaskIds addObject:taskId];
+                [(NSURLSessionDownloadTask *)task cancel];
                 self.downloadTask = [self.session downloadTaskWithResumeData:resumeData];
-                self.downloadTask.taskDescription = self.downloadUri;
+                self.downloadTask.taskDescription = downloadUri;
+                NSNumber *replacementTaskId = @(self.downloadTask.taskIdentifier);
+                _callbackIdsByTaskId[replacementTaskId] = callbackId;
+                _downloadUrisByTaskId[replacementTaskId] = downloadUri;
+                if (_targetFilesByTaskId[taskId] != nil) {
+                    _targetFilesByTaskId[replacementTaskId] = _targetFilesByTaskId[taskId];
+                }
+                [_callbackIdsByTaskId removeObjectForKey:taskId];
+                [_downloadUrisByTaskId removeObjectForKey:taskId];
+                [_targetFilesByTaskId removeObjectForKey:taskId];
                 [self.downloadTask resume];
                 return;
             }
         }
-        CDVPluginResult* errorResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:[error localizedDescription]];
-        [self.commandDelegate sendPluginResult:errorResult callbackId:self.callbackId];
+        if (callbackId != nil) {
+            CDVPluginResult* errorResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:[error localizedDescription]];
+            [self.commandDelegate sendPluginResult:errorResult callbackId:callbackId];
+        }
     } else {
-        CDVPluginResult* pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
-        [self.commandDelegate sendPluginResult:pluginResult callbackId:self.callbackId];
+        if (callbackId != nil) {
+            CDVPluginResult* pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
+            [self.commandDelegate sendPluginResult:pluginResult callbackId:callbackId];
+        }
     }
+
+    [_callbackIdsByTaskId removeObjectForKey:taskId];
+    [_downloadUrisByTaskId removeObjectForKey:taskId];
+    [_targetFilesByTaskId removeObjectForKey:taskId];
+    [_ignoreCompletionForTaskIds removeObject:taskId];
 }
 
 - (void)URLSession:(NSURLSession *)session downloadTask:(NSURLSessionDownloadTask *)downloadTask didFinishDownloadingToURL:(NSURL *)location {
     NSFileManager *fileManager = [NSFileManager defaultManager];
     
-    NSURL *targetURL = [NSURL URLWithString:self.targetFile];
+    NSString *targetFile = _targetFilesByTaskId[@(downloadTask.taskIdentifier)];
+    if (targetFile == nil) {
+        return;
+    }
+
+    NSURL *targetURL = [NSURL URLWithString:targetFile];
     
     [fileManager removeItemAtPath:targetURL.path error: nil];
     [fileManager createFileAtPath:targetURL.path contents:[fileManager contentsAtPath:[location path]] attributes:nil];
