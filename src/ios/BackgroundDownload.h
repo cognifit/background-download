@@ -24,9 +24,6 @@
 // the download wilcontinue until it completes.
 @interface BackgroundDownload : CDVPlugin <NSURLSessionDownloadDelegate>
 
-@property NSString *targetFile;
-@property NSString *downloadUri;
-@property NSString *callbackId;
 @property (copy) void (^backgroundCompletionHandler)(void);
 
 @property (nonatomic) NSURLSession *session;
