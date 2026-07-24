@@ -38,6 +38,7 @@ xmlns:android="http://schemas.android.com/apk/res/android"
         </config-file>
 
         <source-file src="src/android/BackgroundDownload.java" target-dir="src/org/apache/cordova/backgroundDownload" />
+        <framework src="src/android/BackgroundDownloadPlugin.gradle" custom="true" type="gradleReference" />
     </platform>
 
     <!-- ios -->
