@@ -858,6 +858,22 @@ public class BackgroundDownload extends CordovaPlugin {
 
     private BroadcastReceiver receiver = new BroadcastReceiver() {
         public void onReceive(final Context context, Intent intent) {
+            final BroadcastReceiver.PendingResult pendingResult = goAsync();
+            final Intent receivedIntent = intent;
+
+            cordova.getThreadPool().execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        handleDownloadComplete(context, receivedIntent);
+                    } finally {
+                        pendingResult.finish();
+                    }
+                }
+            });
+        }
+
+        private void handleDownloadComplete(Context context, Intent intent) {
 
             final DownloadManager mgr = (DownloadManager) context.getSystemService(Context.DOWNLOAD_SERVICE);
 
