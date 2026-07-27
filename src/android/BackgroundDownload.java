@@ -258,11 +258,29 @@ public class BackgroundDownload extends CordovaPlugin {
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) throws JSONException {
         try {
             if (action.equals("startAsync")) {
-                startAsync(args, callbackContext);
+                cordova.getThreadPool().execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            startAsync(args, callbackContext);
+                        } catch (Exception ex) {
+                            callbackContext.error(ex.getMessage());
+                        }
+                    }
+                });
                 return true;
             }
             if (action.equals("stop")) {
-                stop(args, callbackContext);
+                cordova.getThreadPool().execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            stop(args, callbackContext);
+                        } catch (Exception ex) {
+                            callbackContext.error(ex.getMessage());
+                        }
+                    }
+                });
                 return true;
             }
             return false; // invalid action
