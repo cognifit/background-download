@@ -27,11 +27,12 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.cordova.CallbackContext;
@@ -252,7 +253,7 @@ public class BackgroundDownload extends CordovaPlugin {
         }
     }
 
-    HashMap<String, Download> activDownloads = new HashMap<String, Download>();
+    private final Map<String, Download> activDownloads = new ConcurrentHashMap<String, Download>();
 
     @Override
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) throws JSONException {
@@ -383,9 +384,18 @@ public class BackgroundDownload extends CordovaPlugin {
     }
 
     private void pollDownloadManagerProgress(Download curDownload, DownloadManager mgr) {
+        if (mgr == null || curDownload.getDownloadId() == DOWNLOAD_ID_UNDEFINED) {
+            return;
+        }
+
         DownloadManager.Query q = new DownloadManager.Query();
         q.setFilterById(curDownload.getDownloadId());
-        Cursor cursor = mgr.query(q);
+        Cursor cursor = queryDownloadManagerSafely(mgr, q);
+        if (cursor == null) {
+            Log.w(TAG, "DownloadManager returned no cursor while polling uri=" + curDownload.getUriString());
+            return;
+        }
+
         try {
             if (!cursor.moveToFirst()) {
                 return;
@@ -396,7 +406,7 @@ public class BackgroundDownload extends CordovaPlugin {
         } catch (IllegalArgumentException e) {
             // ignored
         } finally {
-            cursor.close();
+            closeCursorQuietly(cursor);
         }
     }
 
@@ -692,34 +702,64 @@ public class BackgroundDownload extends CordovaPlugin {
 
         DownloadManager mgr = (DownloadManager) cordova.getActivity().getSystemService(Context.DOWNLOAD_SERVICE);
 
+        if (mgr == null) {
+            return DOWNLOAD_ID_UNDEFINED;
+        }
+
         long downloadId = DOWNLOAD_ID_UNDEFINED;
 
         DownloadManager.Query query = new DownloadManager.Query();
         query.setFilterByStatus(DownloadManager.STATUS_PAUSED | DownloadManager.STATUS_PENDING | DownloadManager.STATUS_RUNNING | DownloadManager.STATUS_SUCCESSFUL);
-        Cursor cur = mgr.query(query);
-        int idxId = cur.getColumnIndex(DownloadManager.COLUMN_ID);
-        int idxUri = cur.getColumnIndex(DownloadManager.COLUMN_URI);
-        for (cur.moveToFirst(); !cur.isAfterLast(); cur.moveToNext()) {
-            if (uri.equals(cur.getString(idxUri))) {
-                downloadId = cur.getLong(idxId);
-                break;
-            }
+        Cursor cur = queryDownloadManagerSafely(mgr, query);
+        if (cur == null) {
+            return DOWNLOAD_ID_UNDEFINED;
         }
-        cur.close();
+
+        try {
+            int idxId = cur.getColumnIndex(DownloadManager.COLUMN_ID);
+            int idxUri = cur.getColumnIndex(DownloadManager.COLUMN_URI);
+            if (idxId < 0 || idxUri < 0 || !cur.moveToFirst()) {
+                return DOWNLOAD_ID_UNDEFINED;
+            }
+            do {
+                if (uri.equals(cur.getString(idxUri))) {
+                    downloadId = cur.getLong(idxId);
+                    break;
+                }
+            } while (cur.moveToNext());
+        } finally {
+            closeCursorQuietly(cur);
+        }
 
         return downloadId;
     }
 
+    private Download findActiveDownloadById(long downloadId) {
+        for (Download download : activDownloads.values()) {
+            if (download.getDownloadId() == downloadId) {
+                return download;
+            }
+        }
+        return null;
+    }
+
     private Boolean checkDownloadCompleted(long id) {
         DownloadManager mgr = (DownloadManager) this.cordova.getActivity().getSystemService(Context.DOWNLOAD_SERVICE);
+        if (mgr == null || id == DOWNLOAD_ID_UNDEFINED) {
+            return false;
+        }
+
         DownloadManager.Query query = new DownloadManager.Query();
         query.setFilterById(id);
-        Cursor cur = mgr.query(query);
-        int idxStatus = cur.getColumnIndex(DownloadManager.COLUMN_STATUS);
-        int idxURI = cur.getColumnIndex(DownloadManager.COLUMN_URI);
+        Cursor cur = queryDownloadManagerSafely(mgr, query);
+        if (cur == null) {
+            return false;
+        }
 
         try {
-            if (cur.moveToFirst()) {
+            int idxStatus = cur.getColumnIndex(DownloadManager.COLUMN_STATUS);
+            int idxURI = cur.getColumnIndex(DownloadManager.COLUMN_URI);
+            if (idxStatus >= 0 && idxURI >= 0 && cur.moveToFirst()) {
                 int status = cur.getInt(idxStatus);
                 String uri = cur.getString(idxURI);
                 Download curDownload = activDownloads.get(uri);
@@ -731,7 +771,7 @@ public class BackgroundDownload extends CordovaPlugin {
             }
             return false;
         } finally {
-            cur.close();
+            closeCursorQuietly(cur);
         }
     }
 
@@ -870,6 +910,28 @@ public class BackgroundDownload extends CordovaPlugin {
         }
     }
 
+    private static void closeCursorQuietly(Cursor cursor) {
+        if (cursor == null) {
+            return;
+        }
+        try {
+            cursor.close();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static Cursor queryDownloadManagerSafely(DownloadManager mgr, DownloadManager.Query query) {
+        if (mgr == null) {
+            return null;
+        }
+        try {
+            return mgr.query(query);
+        } catch (Exception ex) {
+            Log.w(TAG, "DownloadManager query failed", ex);
+            return null;
+        }
+    }
+
     private static String emptyToDefault(String value, String defaultValue) {
         return TextUtils.isEmpty(value) ? defaultValue : value;
     }
@@ -898,22 +960,30 @@ public class BackgroundDownload extends CordovaPlugin {
             final long downloadId = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
             DownloadManager.Query query = new DownloadManager.Query();
             query.setFilterById(downloadId);
-            final Cursor cursor = mgr.query(query);
-            int idxURI = cursor.getColumnIndex(DownloadManager.COLUMN_URI);
-            cursor.moveToFirst();
+            final Cursor cursor = queryDownloadManagerSafely(mgr, query);
             Download curDownload = null;
             boolean cleanupHandledAsync = false;
 
             try {
-                String uri = cursor.getString(idxURI);
-                curDownload = activDownloads.get(uri);
+                if (cursor == null) {
+                    Log.w(TAG, "DownloadManager returned no cursor for completed downloadId=" + downloadId);
+                    curDownload = findActiveDownloadById(downloadId);
+                } else {
+                    int idxURI = cursor.getColumnIndex(DownloadManager.COLUMN_URI);
+                    int idxStatus = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
+                    int idxReason = cursor.getColumnIndex(DownloadManager.COLUMN_REASON);
 
-                long receivedID = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L);
-                query.setFilterById(receivedID);
-                int idxStatus = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
-                int idxReason = cursor.getColumnIndex(DownloadManager.COLUMN_REASON);
+                    if (idxURI >= 0 && idxStatus >= 0 && idxReason >= 0 && cursor.moveToFirst()) {
+                        String uri = cursor.getString(idxURI);
+                        curDownload = activDownloads.get(uri);
+                    }
+                }
 
-                if (cursor.moveToFirst()) {
+                if (cursor != null && cursor.getPosition() >= 0
+                        && cursor.getColumnIndex(DownloadManager.COLUMN_STATUS) >= 0
+                        && cursor.getColumnIndex(DownloadManager.COLUMN_REASON) >= 0) {
+                    int idxStatus = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
+                    int idxReason = cursor.getColumnIndex(DownloadManager.COLUMN_REASON);
                     final int status = cursor.getInt(idxStatus);
                     final int reason = cursor.getInt(idxReason);
                     if (status == DownloadManager.STATUS_SUCCESSFUL) {
@@ -924,7 +994,7 @@ public class BackgroundDownload extends CordovaPlugin {
                         final Download downloadRef = curDownload;
                         final JSONObject payload = createFailurePayload(context, cursor, curDownload, status, reason);
                         cleanupHandledAsync = true;
-                        cursor.close();
+                        closeCursorQuietly(cursor);
                         removeDownloadManagerEntryAsync(downloadId);
                         cordova.getThreadPool().execute(new Runnable() {
                             @Override
@@ -951,7 +1021,7 @@ public class BackgroundDownload extends CordovaPlugin {
                         final Download downloadRef = curDownload;
                         final int reasonRef = reason;
                         cleanupHandledAsync = true;
-                        cursor.close();
+                        closeCursorQuietly(cursor);
                         cordova.getThreadPool().execute(new Runnable() {
                             @Override
                             public void run() {
@@ -973,7 +1043,6 @@ public class BackgroundDownload extends CordovaPlugin {
                 } else if (curDownload != null && !curDownload.isStopRequested()) {
                     curDownload.getCallbackContextDownloadStart().error("cancelled or terminated");
                 }
-                cursor.close();
             } catch (Exception ex) {
                 if (curDownload != null) {
                     JSONObject payload = new JSONObject();
@@ -1010,10 +1079,7 @@ public class BackgroundDownload extends CordovaPlugin {
                     }
                 }
                 if (!cleanupHandledAsync) {
-                    try {
-                        cursor.close();
-                    } catch (Exception ignored) {
-                    }
+                    closeCursorQuietly(cursor);
                 }
             }
         }
