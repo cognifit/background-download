@@ -1,4 +1,4 @@
-﻿/*
+/*
  *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -62,7 +62,12 @@ DownloadOperation.prototype.startAsync = function() {
             deferral.reject(err);
         };
 
-    exec(successCallback, errorCallback, "BackgroundDownload", "startAsync", [this.uri, this.resultFile.toURL(), this.notificationTitle]);
+    // Cordova File exposes nativeURL on both cordova-ios 7 and 8. The native downloaders need
+    // that file:// location; Cordova 8 can otherwise make toURL() a webview-origin URL.
+    var nativeFileUrl = typeof this.resultFile.nativeURL === 'string' && this.resultFile.nativeURL.indexOf('file:') === 0
+        ? this.resultFile.nativeURL
+        : this.resultFile.toURL();
+    exec(successCallback, errorCallback, "BackgroundDownload", "startAsync", [this.uri, nativeFileUrl, this.notificationTitle]);
 
     // custom mechanism to trigger stop when user cancels pending operation
     deferral.promise.onCancelled = function () {
