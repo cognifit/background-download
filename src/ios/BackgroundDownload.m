@@ -25,6 +25,7 @@ static NSString *const kBackgroundDownloadSessionIdentifierSuffix = @"cordova.pl
     NSMutableDictionary<NSNumber *, NSString *> *_callbackIdsByTaskId;
     NSMutableDictionary<NSNumber *, NSString *> *_downloadUrisByTaskId;
     NSMutableDictionary<NSNumber *, NSString *> *_targetFilesByTaskId;
+    NSMutableDictionary<NSNumber *, NSError *> *_writeErrorsByTaskId;
     NSMutableSet<NSNumber *> *_ignoreCompletionForTaskIds;
 }
 
@@ -47,6 +48,7 @@ static NSString *const kBackgroundDownloadSessionIdentifierSuffix = @"cordova.pl
     _callbackIdsByTaskId = [NSMutableDictionary dictionary];
     _downloadUrisByTaskId = [NSMutableDictionary dictionary];
     _targetFilesByTaskId = [NSMutableDictionary dictionary];
+    _writeErrorsByTaskId = [NSMutableDictionary dictionary];
     _ignoreCompletionForTaskIds = [NSMutableSet set];
     self.session = [self backgroundSession];
 }
@@ -214,6 +216,12 @@ static NSString *const kBackgroundDownloadSessionIdentifierSuffix = @"cordova.pl
             CDVPluginResult* errorResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:[error localizedDescription]];
             [self.commandDelegate sendPluginResult:errorResult callbackId:callbackId];
         }
+    } else if (_writeErrorsByTaskId[taskId] != nil) {
+        NSError *writeError = _writeErrorsByTaskId[taskId];
+        if (callbackId != nil) {
+            CDVPluginResult* errorResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:[writeError localizedDescription]];
+            [self.commandDelegate sendPluginResult:errorResult callbackId:callbackId];
+        }
     } else {
         if (callbackId != nil) {
             CDVPluginResult* pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
@@ -224,6 +232,7 @@ static NSString *const kBackgroundDownloadSessionIdentifierSuffix = @"cordova.pl
     [_callbackIdsByTaskId removeObjectForKey:taskId];
     [_downloadUrisByTaskId removeObjectForKey:taskId];
     [_targetFilesByTaskId removeObjectForKey:taskId];
+    [_writeErrorsByTaskId removeObjectForKey:taskId];
     [_ignoreCompletionForTaskIds removeObject:taskId];
 }
 
@@ -236,8 +245,41 @@ static NSString *const kBackgroundDownloadSessionIdentifierSuffix = @"cordova.pl
     }
 
     NSURL *targetURL = [NSURL URLWithString:targetFile];
-    
-    [fileManager removeItemAtPath:targetURL.path error: nil];
-    [fileManager createFileAtPath:targetURL.path contents:[fileManager contentsAtPath:[location path]] attributes:nil];
+    if (targetURL == nil || !targetURL.isFileURL) {
+        NSError *error = [NSError errorWithDomain:@"BackgroundDownload"
+                                             code:1
+                                         userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Background download target is not a file URL: %@", targetFile]}];
+        _writeErrorsByTaskId[@(downloadTask.taskIdentifier)] = error;
+        NSLog(@"[BackgroundDownload] %@", error.localizedDescription);
+        return;
+    }
+
+    NSError *removeError = nil;
+    [fileManager removeItemAtURL:targetURL error:&removeError];
+    if (removeError != nil && removeError.code != NSFileNoSuchFileError) {
+        _writeErrorsByTaskId[@(downloadTask.taskIdentifier)] = removeError;
+        NSLog(@"[BackgroundDownload] Could not remove %@: %@", targetURL.path, removeError.localizedDescription);
+        return;
+    }
+
+    NSError *copyError = nil;
+    BOOL didCopy = [fileManager copyItemAtURL:location toURL:targetURL error:&copyError];
+    unsigned long long downloadedBytes = [[fileManager attributesOfItemAtPath:location.path error:nil][NSFileSize] unsignedLongLongValue];
+    unsigned long long targetBytes = [[fileManager attributesOfItemAtPath:targetURL.path error:nil][NSFileSize] unsignedLongLongValue];
+    if (!didCopy || downloadedBytes == 0 || targetBytes != downloadedBytes) {
+        NSString *message = [NSString stringWithFormat:@"Could not write background download to %@ (downloaded=%llu bytes, target=%llu bytes)%@",
+                             targetURL.path,
+                             downloadedBytes,
+                             targetBytes,
+                             copyError == nil ? @"" : [NSString stringWithFormat:@": %@", copyError.localizedDescription]];
+        NSError *error = [NSError errorWithDomain:@"BackgroundDownload"
+                                             code:2
+                                         userInfo:@{NSLocalizedDescriptionKey: message}];
+        _writeErrorsByTaskId[@(downloadTask.taskIdentifier)] = error;
+        NSLog(@"[BackgroundDownload] %@", message);
+        return;
+    }
+
+    NSLog(@"[BackgroundDownload] Wrote %llu bytes to %@", targetBytes, targetURL.path);
 }
 @end
