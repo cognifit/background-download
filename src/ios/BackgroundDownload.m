@@ -21,6 +21,13 @@
 
 static NSString *const kBackgroundDownloadSessionIdentifierSuffix = @"cordova.plugin.BackgroundDownload.BackgroundSession";
 
+// Hard cap on concurrent background downloads. Requests beyond this limit are silently
+// ignored (no success/error callback ever fires for them) -- same behavior the plugin already
+// uses for a duplicate in-flight URL. Raise/lower this to whatever the app actually needs;
+// it also governs HTTPMaximumConnectionsPerHost below so same-host downloads can truly run
+// in parallel instead of queueing behind a single connection.
+static NSUInteger const kBackgroundDownloadMaxConcurrentDownloads = 3;
+
 @implementation BackgroundDownload {
     NSMutableDictionary<NSNumber *, NSString *> *_callbackIdsByTaskId;
     NSMutableDictionary<NSNumber *, NSString *> *_downloadUrisByTaskId;
@@ -62,6 +69,11 @@ static NSString *const kBackgroundDownloadSessionIdentifierSuffix = @"cordova.pl
     
     self.session = [self backgroundSession];
     [self.session getTasksWithCompletionHandler:^(NSArray *dataTasks, NSArray *uploadTasks, NSArray *downloadTasks) {
+        if (_callbackIdsByTaskId.count >= kBackgroundDownloadMaxConcurrentDownloads) {
+            NSLog(@"[BackgroundDownload] Ignoring startAsync for %@: max concurrent downloads (%lu) reached", downloadUri, (unsigned long)kBackgroundDownloadMaxConcurrentDownloads);
+            return;
+        }
+
         NSURLSessionDownloadTask *matchingTask = nil;
         for (NSURLSessionDownloadTask *existingTask in downloadTasks) {
             NSNumber *taskId = @(existingTask.taskIdentifier);
@@ -105,7 +117,7 @@ static NSString *const kBackgroundDownloadSessionIdentifierSuffix = @"cordova.pl
             if ([config respondsToSelector:@selector(setSessionSendsLaunchEvents:)]) {
                 config.sessionSendsLaunchEvents = YES;
             }
-            config.HTTPMaximumConnectionsPerHost = 1;
+            config.HTTPMaximumConnectionsPerHost = kBackgroundDownloadMaxConcurrentDownloads;
             backgroundSession = [NSURLSession sessionWithConfiguration:config delegate:self delegateQueue:nil];
         }
     }
