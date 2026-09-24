@@ -29,7 +29,10 @@ API provides an advanced file download functionality that persists beyond app te
  * Android
  
 **Quirks**
- * Concurrent background downloads are NOT currently supported on iOS.
+ * Concurrent background downloads ARE supported on iOS and Android (this fork), capped at a small
+   hardcoded limit (kBackgroundDownloadMaxConcurrentDownloads on iOS, MAX_CONCURRENT_DOWNLOADS on
+   Android; currently 3 on both). Requests beyond the cap are silently ignored -- no success/error
+   callback ever fires for them -- the same way a duplicate in-flight URI is already ignored below.
  * If a download operation was completed when the application was in the background, onSuccess callback is called when the application become active.
  * If a download operation was completed when the application was closed, onSuccess callback is called right after the first startAsync() is called for the same uri, as if the file has been downloaded immediatly.
  * A new download operation for the same uri resumes a pending download instead of triggering a new one. If no pending downloads found for the uri specified, a new download is started, the target file will be automatically overwritten once donwload is completed.
