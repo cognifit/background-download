@@ -68,7 +68,8 @@ import androidx.work.WorkerParameters;
 
 /**
  * Based on DownloadManager which is intended to be used for long-running HTTP downloads. Support of Android 2.3. (API 9) and later
- * http://developer.android.com/reference/android/app/DownloadManager.html TODO: concurrent downloads support
+ * http://developer.android.com/reference/android/app/DownloadManager.html
+ * Concurrent downloads of different URIs are supported, capped at MAX_CONCURRENT_DOWNLOADS.
  */
 
 public class BackgroundDownload extends CordovaPlugin {
@@ -84,6 +85,10 @@ public class BackgroundDownload extends CordovaPlugin {
     private static final int HTTP_PROGRESS_MIN_BYTES = 64 * 1024;
     private static final long HTTP_PROGRESS_MIN_INTERVAL_MS = 1000L;
     private static final int HTTP_MAX_REDIRECTS = 5;
+    // Hard cap on concurrent downloads. Requests beyond this limit are silently ignored
+    // (no success/error callback ever fires for them), same behavior already used below for
+    // a duplicate in-flight URI. Raise/lower this to whatever the app actually needs.
+    private static final int MAX_CONCURRENT_DOWNLOADS = 3;
     private static final String WORK_INPUT_URI = "uri";
     private static final String WORK_INPUT_TEMP_PATH = "tempFilePath";
     private static final String WORK_PROGRESS_BYTES_RECEIVED = "bytesReceived";
@@ -307,6 +312,11 @@ public class BackgroundDownload extends CordovaPlugin {
         curDownload.setNotificationTitle(notificationTitle);
 
         if (activDownloads.containsKey(curDownload.getUriString())) {
+            return;
+        }
+
+        if (activDownloads.size() >= MAX_CONCURRENT_DOWNLOADS) {
+            Log.w(TAG, "Ignoring startAsync for uri=" + curDownload.getUriString() + ": max concurrent downloads (" + MAX_CONCURRENT_DOWNLOADS + ") reached");
             return;
         }
 
